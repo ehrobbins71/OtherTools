@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Air Theremin</title>
+<style>
+  /* Layout: one mirrored camera stage on top, a compact control strip below. */
+  :root {
+    --bg: #0c0f14;
+    --panel: #151a22;
+    --line: #2a323f;
+    --fg: #e8ecf2;
+    --muted: #8d98a8;
+    --pitch: #5ee0c0;
+    --vol: #ffb45e;
+    --warn: #ff6b6b;
+    --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font); }
+  body { padding: 20px max(16px, env(safe-area-inset-left, 0px)) 32px max(16px, env(safe-area-inset-right, 0px)); }
+  main { max-width: 960px; margin: 0 auto; display: grid; gap: 16px; }
+  h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; text-wrap: balance; }
+  header p { margin: 4px 0 0; color: var(--muted); max-width: 65ch; }
+  .stage { position: relative; background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; aspect-ratio: 4 / 3; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(12,15,20,0.78); text-align: center; padding: 24px; }
+  .overlay[hidden] { display: none; }
+  .overlay div { display: grid; gap: 12px; justify-items: center; max-width: 46ch; }
+  .overlay p { margin: 0; color: var(--muted); }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px; cursor: pointer; }
+  button.primary { background: var(--pitch); color: #05211b; border-color: var(--pitch); font-weight: 600; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--pitch); outline-offset: 2px; }
+  .readout { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; font-family: var(--mono); }
+  .note { font-size: 2rem; font-weight: 600; color: var(--pitch); min-width: 3ch; }
+  .hz, .vol { color: var(--muted); }
+  .vol b { color: var(--vol); font-weight: 600; }
+  #status { margin-left: auto; color: var(--muted); font-family: var(--font); font-size: 0.85rem; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  label { display: grid; gap: 4px; font-size: 0.85rem; color: var(--muted); min-width: 0; }
+  label.check { grid-auto-flow: column; justify-content: start; align-items: center; gap: 8px; }
+  select, input[type=range] { width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  input[type=range] { padding: 0; accent-color: var(--pitch); }
+  .help { color: var(--muted); font-size: 0.9rem; max-width: 70ch; }
+  .help b { color: var(--fg); font-weight: 600; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Air Theremin</h1>
+    <p>Play pitch and volume with your hands in front of the camera. Video is processed on this device and never uploaded.</p>
+  </header>
+
+  <div class="stage">
+    <canvas id="view" width="960" height="720" aria-label="Camera view with hand tracking"></canvas>
+    <div class="overlay" id="intro">
+      <div>
+        <h2 style="margin:0">Ready when you are</h2>
+        <p>Stand back so both hands are visible. Your <b>right hand</b> controls pitch, your <b>left hand</b> controls volume.</p>
+        <div class="btns">
+          <button class="primary" id="startCam">Start with camera</button>
+          <button id="startPointer">Use mouse or touch instead</button>
+        </div>
+        <p id="introMsg" role="status"></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="readout" aria-live="off">
+    <span class="note" id="note">--</span>
+    <span class="hz" id="hz">0 Hz</span>
+    <span class="vol">volume <b id="volv">0%</b></span>
+    <span id="status">Not started</span>
+  </div>
+
+  <section class="controls" aria-label="Sound settings">
+    <label for="wave">Tone
+      <select id="wave">
+        <option value="sine">Classic sine</option>
+        <option value="triangle" selected>Warm triangle</option>
+        <option value="sawtooth">Buzzy saw</option>
+        <option value="square">Hollow square</option>
+      </select>
+    </label>
+    <label for="scale">Pitch snapping
+      <select id="scale">
+        <option value="free" selected>Off (continuous, like a real theremin)</option>
+        <option value="chromatic">Chromatic</option>
+        <option value="major">C major</option>
+        <option value="minpent">C minor pentatonic</option>
+      </select>
+    </label>
+    <label for="vib">Vibrato
+      <input id="vib" type="range" min="0" max="60" value="12">
+    </label>
+    <label for="range">Pitch range (octaves)
+      <input id="range" type="range" min="2" max="5" step="1" value="3">
+    </label>
+    <label for="smooth">Smoothing
+      <input id="smooth" type="range" min="0" max="100" value="50">
+    </label>
+    <label class="check" for="single"><input id="single" type="checkbox"> Single-hand mode (constant volume)</label>
+    <label class="check" for="mirror"><input id="mirror" type="checkbox" checked> Show video mirrored</label>
+  </section>
+
+  <p class="help">
+    <b>Tips:</b> Raise your right hand to go higher in pitch. Raise your left hand to get louder; drop it to fade out, and the sound stops when the left hand leaves the frame.
+    Good light on your hands helps tracking. With mouse or touch, drag up and down for pitch and left to right for volume.
+  </p>
+</main>
+
+<script type="module">
+const VISION_VERSION = "0.10.14";
+const VISION_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VISION_VERSION}`;
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("view"), ctx = canvas.getContext("2d");
+const video = document.createElement("video");
+video.playsInline = true; video.muted = true;
+
+// ---------- One Euro filter (low jitter when still, low lag when moving) ----------
+class OneEuro {
+  constructor() { this.x = null; this.dx = 0; this.t = null; }
+  static alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  reset() { this.x = null; this.dx = 0; this.t = null; }
+  filter(v, t, minCutoff, beta) {
+    if (this.x === null) { this.x = v; this.t = t; return v; }
+    const dt = Math.max(1e-3, t - this.t); this.t = t;
+    const d = (v - this.x) / dt;
+    this.dx += OneEuro.alpha(1, dt) * (d - this.dx);
+    const cutoff = minCutoff + beta * Math.abs(this.dx);
+    this.x += OneEuro.alpha(cutoff, dt) * (v - this.x);
+    return this.x;
+  }
+}
+const pitchFilter = new OneEuro(), volFilter = new OneEuro();
+function smoothParams() {
+  const s = +$("smooth").value / 100;       // 0 = responsive, 1 = very smooth
+  return { minCutoff: 3.0 - 2.6 * s, beta: 0.6 - 0.5 * s };
+}
+
+// ---------- Audio ----------
+let actx, osc, lp, amp, lfo, lfoGain;
+const SCALES = { chromatic: [0,1,2,3,4,5,6,7,8,9,10,11], major: [0,2,4,5,7,9,11], minpent: [0,3,5,7,10] };
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const LOW_MIDI = 48; // C3
+const midiToHz = (m) => 440 * Math.pow(2, (m - 69) / 12);
+const noteName = (m) => NOTE_NAMES[((Math.round(m) % 12) + 12) % 12] + (Math.floor(Math.round(m) / 12) - 1);
+
+function initAudio() {
+  if (actx) { actx.resume(); return; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  osc = actx.createOscillator(); osc.type = $("wave").value; osc.frequency.value = 220;
+  lp = actx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 3000; lp.Q.value = 0.7;
+  amp = actx.createGain(); amp.gain.value = 0;
+  lfo = actx.createOscillator(); lfo.frequency.value = 5.5;
+  lfoGain = actx.createGain(); lfoGain.gain.value = 0;
+  lfo.connect(lfoGain).connect(osc.frequency);
+  osc.connect(lp).connect(amp).connect(actx.destination);
+  osc.start(); lfo.start();
+}
+$("wave").addEventListener("change", () => { if (osc) osc.type = $("wave").value; });
+
+const state = { midi: LOW_MIDI + 12, hz: 0, vol: 0, pitchSeen: false, volSeen: false };
+
+function setSound(t, vol, active) {
+  // t: 0..1 position along the pitch range; vol: 0..1
+  const octaves = +$("range").value;
+  let midi = LOW_MIDI + t * octaves * 12;
+  const scale = $("scale").value;
+  let glide = 0.025;
+  if (scale !== "free") {
+    const set = SCALES[scale]; let best = Math.round(midi), bd = 99;
+    for (let m = Math.floor(midi) - 2; m <= Math.ceil(midi) + 2; m++) {
+      if (!set.includes(((m % 12) + 12) % 12)) continue;
+      const d = Math.abs(m - midi); if (d < bd) { bd = d; best = m; }
+    }
+    midi = best; glide = 0.05;
+  }
+  const hz = midiToHz(midi);
+  state.midi = midi; state.hz = hz; state.vol = active ? vol : 0;
+  if (!actx) return;
+  const now = actx.currentTime;
+  osc.frequency.setTargetAtTime(hz, now, glide);
+  lfoGain.gain.setTargetAtTime(hz * (Math.pow(2, +$("vib").value / 1200) - 1), now, 0.05);
+  lp.frequency.setTargetAtTime(Math.min(8000, hz * 5 + 600), now, 0.05);
+  amp.gain.setTargetAtTime(active ? Math.pow(vol, 1.6) * 0.45 : 0, now, active ? 0.03 : 0.06);
+}
+function silence() { state.vol = 0; if (actx) amp.gain.setTargetAtTime(0, actx.currentTime, 0.06); }
+
+// ---------- Hand tracking ----------
+let landmarker = null, camOn = false, pointerMode = false, lastVideoTime = -1;
+let pitchHand = null, volHand = null, lastSeen = { p: 0, v: 0 };
+const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+
+async function loadLandmarker() {
+  const { HandLandmarker, FilesetResolver } = await import(`${VISION_URL}/vision_bundle.mjs`);
+  const fileset = await FilesetResolver.forVisionTasks(`${VISION_URL}/wasm`);
+  const make = (delegate) => HandLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MODEL_URL, delegate },
+    runningMode: "VIDEO", numHands: 2,
+    minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5
+  });
+  try { return await make("GPU"); } catch (e) { console.warn("GPU delegate failed, using CPU", e); return await make("CPU"); }
+}
+
+async function startCamera() {
+  $("startCam").disabled = $("startPointer").disabled = true;
+  $("introMsg").textContent = "Starting audio and loading the hand model...";
+  initAudio();
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("Camera access is not available in this browser or context.");
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 960, height: 720, facingMode: "user" }, audio: false });
+    video.srcObject = stream; await video.play();
+    landmarker = await loadLandmarker();
+    camOn = true; pointerMode = false;
+    $("intro").hidden = true; $("status").textContent = "Tracking hands";
+    requestAnimationFrame(loop);
+  } catch (err) {
+    console.error(err);
+    $("introMsg").textContent = `Could not start the camera (${err.message || err.name}). You can use the mouse or touch version instead.`;
+    $("startCam").disabled = $("startPointer").disabled = false;
+  }
+}
+
+function startPointer() {
+  initAudio(); pointerMode = true; camOn = false;
+  $("intro").hidden = true; $("status").textContent = "Mouse / touch mode";
+  requestAnimationFrame(loop);
+}
+
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+
+function processHands(result, nowSec) {
+  const mirror = true; // pitch hand = user's right hand = right side of the mirrored view
+  const hands = (result.landmarks || []).map((lm) => {
+    const rawX = (lm[0].x + lm[9].x) / 2, y = (lm[0].y + lm[9].y) / 2;
+    return { lm, x: 1 - rawX, y };                  // x in mirrored space
+  });
+  const right = hands.filter(h => h.x > 0.5).sort((a, b) => b.x - a.x)[0] || null;
+  const left = hands.filter(h => h.x <= 0.5).sort((a, b) => a.x - b.x)[0] || null;
+  pitchHand = right; volHand = left;
+
+  const { minCutoff, beta } = smoothParams();
+  const single = $("single").checked;
+  const nowMs = nowSec * 1000;
+  if (right) lastSeen.p = nowMs; if (left) lastSeen.v = nowMs;
+  const pAlive = nowMs - lastSeen.p < 200, vAlive = nowMs - lastSeen.v < 200;
+
+  if (!right && !pAlive) pitchFilter.reset();
+  if (!left && !vAlive) volFilter.reset();
+
+  if (!pAlive) { silence(); return; }
+  let t = state.lastT ?? 0.5;
+  if (right) t = clamp01(1 - (pitchFilter.filter(right.y, nowSec, minCutoff, beta) - 0.12) / 0.76);
+  state.lastT = t;
+
+  let vol = 0.7, active = true;
+  if (!single) {
+    if (!vAlive) { active = false; }
+    else {
+      let vy = state.lastV ?? 0.5;
+      if (left) vy = clamp01(1 - (volFilter.filter(left.y, nowSec, minCutoff, beta) - 0.12) / 0.76);
+      state.lastV = vy; vol = vy;
+    }
+  }
+  setSound(t, vol, active);
+}
+
+// ---------- Pointer fallback ----------
+const ptr = { down: false, x: 0.5, y: 0.5 };
+function ptrUpdate(e) {
+  const r = canvas.getBoundingClientRect();
+  ptr.x = clamp01((e.clientX - r.left) / r.width);
+  ptr.y = clamp01((e.clientY - r.top) / r.height);
+}
+canvas.addEventListener("pointerdown", (e) => { if (!pointerMode) return; canvas.setPointerCapture(e.pointerId); ptr.down = true; ptrUpdate(e); });
+canvas.addEventListener("pointermove", (e) => { if (pointerMode && ptr.down) ptrUpdate(e); });
+const ptrUp = () => { ptr.down = false; };
+canvas.addEventListener("pointerup", ptrUp); canvas.addEventListener("pointercancel", ptrUp);
+
+// ---------- Main loop and drawing ----------
+function loop() {
+  if (!camOn && !pointerMode) return;
+  if (camOn) {
+    if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime;
+      try { processHands(landmarker.detectForVideo(video, performance.now()), performance.now() / 1000); }
+      catch (e) { console.error(e); }
+    }
+  } else if (pointerMode) {
+    if (ptr.down) setSound(1 - ptr.y, ptr.x, true); else silence();
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function draw() {
+  const W = canvas.width, H = canvas.height;
+  ctx.save();
+  ctx.fillStyle = "#05070a"; ctx.fillRect(0, 0, W, H);
+  const mirror = $("mirror").checked;
+  if (camOn && video.readyState >= 2) {
+    ctx.save();
+    if (mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
+    ctx.globalAlpha = 0.85; ctx.drawImage(video, 0, 0, W, H);
+    ctx.restore();
+  }
+  // Zones
+  ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.setLineDash([6, 8]);
+  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke(); ctx.setLineDash([]);
+  ctx.font = "600 14px system-ui, sans-serif"; ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,180,94,0.9)"; ctx.fillText(camOn ? "VOLUME HAND" : "VOLUME", W * 0.25, 24);
+  ctx.fillStyle = "rgba(94,224,192,0.9)"; ctx.fillText(camOn ? "PITCH HAND" : "PITCH", W * 0.75, 24);
+
+  // Pitch ruler (right edge)
+  const octaves = +$("range").value, top = H * 0.12, span = H * 0.76;
+  ctx.textAlign = "right"; ctx.font = "12px ui-monospace, monospace";
+  for (let s = 0; s <= octaves * 12; s++) {
+    const y = top + span * (1 - s / (octaves * 12));
+    const isC = s % 12 === 0;
+    ctx.strokeStyle = isC ? "rgba(94,224,192,0.9)" : "rgba(94,224,192,0.35)";
+    ctx.beginPath(); ctx.moveTo(W - (isC ? 28 : 16), y); ctx.lineTo(W - 6, y); ctx.stroke();
+    if (isC) { ctx.fillStyle = "rgba(94,224,192,0.95)"; ctx.fillText(noteName(LOW_MIDI + s), W - 34, y + 4); }
+  }
+  // Current pitch marker
+  if (state.vol > 0.001 || camOn || pointerMode) {
+    const frac = (state.midi - LOW_MIDI) / (octaves * 12);
+    const y = top + span * (1 - clamp01(frac));
+    ctx.fillStyle = state.vol > 0.001 ? "#5ee0c0" : "rgba(94,224,192,0.4)";
+    ctx.beginPath(); ctx.moveTo(W - 40, y); ctx.lineTo(W - 52, y - 7); ctx.lineTo(W - 52, y + 7); ctx.fill();
+  }
+  // Volume bar (left edge)
+  const bx = 14, bw = 14;
+  ctx.strokeStyle = "rgba(255,180,94,0.6)"; ctx.strokeRect(bx, top, bw, span);
+  ctx.fillStyle = "#ffb45e"; const vh = span * clamp01(state.vol);
+  ctx.fillRect(bx, top + span - vh, bw, vh);
+
+  // Hand skeletons
+  for (const [h, col] of [[pitchHand, "#5ee0c0"], [volHand, "#ffb45e"]]) {
+    if (!h || !camOn) continue;
+    const px = (p) => (mirror ? 1 - p.x : p.x) * W, py = (p) => p.y * H;
+    ctx.strokeStyle = col; ctx.lineWidth = 2;
+    for (const [a, b] of CONNECTIONS) { ctx.beginPath(); ctx.moveTo(px(h.lm[a]), py(h.lm[a])); ctx.lineTo(px(h.lm[b]), py(h.lm[b])); ctx.stroke(); }
+    ctx.fillStyle = col; for (const p of h.lm) { ctx.beginPath(); ctx.arc(px(p), py(p), 3.5, 0, 6.283); ctx.fill(); }
+  }
+  if (pointerMode && ptr.down) { ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(ptr.x * W, ptr.y * H, 10, 0, 6.283); ctx.fill(); }
+  ctx.restore();
+
+  const playing = state.vol > 0.001;
+  $("note").textContent = playing ? noteName(state.midi) : "--";
+  $("hz").textContent = playing ? `${state.hz.toFixed(1)} Hz` : "0 Hz";
+  $("volv").textContent = `${Math.round(state.vol * 100)}%`;
+}
+
+$("startCam").addEventListener("click", startCamera);
+$("startPointer").addEventListener("click", startPointer);
+draw();
+</script>
+</body>
+</html>
